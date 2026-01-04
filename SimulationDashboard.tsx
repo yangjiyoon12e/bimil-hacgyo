@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { SimulationResult, Article, Comment, Reply, DMSimulationResult } from './types';
-import { analyzePost, generateReplyReaction, generateReactionToNewComment, generateDMSimulation } from './geminiService';
+import { analyzePost, generateReplyReaction, generateReactionToNewComment, generateDMSimulation } from './services/geminiService';
 
 interface PostDetailProps {
   article: Article;
@@ -40,13 +40,25 @@ const PostDetail: React.FC<PostDetailProps> = ({ article, isSpicyMode, onBack, o
     const loadData = async () => {
         setLoading(true);
         // Pass the current shadow ban status to analysis
-        const res = await analyzePost({ ...article, isShadowBanned }, isSpicyMode);
-        setSimulation(res);
-        setLocalComments(res.comments);
-        setLoading(false);
+        try {
+            const res = await analyzePost({ ...article, isShadowBanned }, isSpicyMode);
+            // Client-side filtering for shadow-banned posts to ensure only author comments or admin comments
+            const filteredComments = res.comments.filter(comment => 
+                !isShadowBanned || 
+                comment.realIdentity === article.realName || 
+                comment.username.includes("운영자") // Allow admin comments even in shadow ban
+            );
+            setSimulation(res);
+            setLocalComments(filteredComments);
+        } catch (error) {
+            console.error("Failed to load simulation data:", error);
+            // Optionally set an error state or display a message
+        } finally {
+            setLoading(false);
+        }
     };
     loadData();
-  }, [article, isSpicyMode]); // Only on mount or article change. Shadow ban change handled separately.
+  }, [article, isSpicyMode, isShadowBanned]); // Re-run when shadow ban state changes
 
   // Handle Shadow Ban Toggle
   const toggleShadowBan = async () => {
@@ -54,10 +66,20 @@ const PostDetail: React.FC<PostDetailProps> = ({ article, isSpicyMode, onBack, o
       setIsShadowBanned(newState);
       setIsReAnalyzing(true);
       // Re-run simulation with new shadow ban state
-      const res = await analyzePost({ ...article, isShadowBanned: newState }, isSpicyMode);
-      setSimulation(res);
-      setLocalComments(res.comments);
-      setIsReAnalyzing(false);
+      try {
+          const res = await analyzePost({ ...article, isShadowBanned: newState }, isSpicyMode);
+          const filteredComments = res.comments.filter(comment => 
+              !newState || 
+              comment.realIdentity === article.realName || 
+              comment.username.includes("운영자")
+          );
+          setSimulation(res);
+          setLocalComments(filteredComments);
+      } catch (error) {
+          console.error("Failed to re-analyze post after toggling shadow ban:", error);
+      } finally {
+          setIsReAnalyzing(false);
+      }
   };
 
   // Handle DM Hacking
@@ -70,8 +92,8 @@ const PostDetail: React.FC<PostDetailProps> = ({ article, isSpicyMode, onBack, o
   };
 
   useEffect(() => {
-      if (localComments.length > 0 && isSubmittingComment) {
-          commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      if (localComments.length > 0 && commentsEndRef.current) {
+          commentsEndRef.current.scrollIntoView({ behavior: 'smooth' });
       }
   }, [localComments]);
 
@@ -104,17 +126,24 @@ const PostDetail: React.FC<PostDetailProps> = ({ article, isSpicyMode, onBack, o
           likes: 0,
           isOp: false
       };
+      
       const updatedComments = [...localComments];
       updatedComments[commentIndex].replies.push(newReply);
       setLocalComments(updatedComments);
+      
       const currentText = replyText;
       setReplyText("");
       setReplyingTo(null);
+
+      // Generate reactions from the AI based on admin's reply
       const reactions = await generateReplyReaction(article, comment, currentText, adminMode);
       if(reactions.length > 0) {
           setLocalComments(prev => {
               const next = [...prev];
-              next[commentIndex].replies.push(...reactions);
+              // Ensure the reaction is added to the correct comment's replies
+              if (next[commentIndex]) {
+                  next[commentIndex].replies.push(...reactions);
+              }
               return next;
           });
       }
@@ -132,12 +161,16 @@ const PostDetail: React.FC<PostDetailProps> = ({ article, isSpicyMode, onBack, o
           replies: []
       };
       setLocalComments(prev => [...prev, newComment]);
+      
       const currentText = mainCommentText;
       setMainCommentText("");
+
+      // Generate reactions to the new comment
       const replies = await generateReactionToNewComment(article, newComment, adminMode);
       if (replies.length > 0) {
           setLocalComments(prev => {
               const next = [...prev];
+              // Find the newly added comment to append replies
               const target = next.find(c => c.id === newComment.id);
               if (target) { target.replies.push(...replies); }
               return next;
