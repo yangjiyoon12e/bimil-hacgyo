@@ -8,11 +8,21 @@ async function retryRequest<T>(requestFn: () => Promise<T>, retries = 3, delay =
   try {
     return await requestFn();
   } catch (error: any) {
-    if (retries > 0 && (error?.status === 429 || error?.code === 429 || error?.message?.includes('429'))) {
+    const errorMessage = typeof error === 'object' && error !== null && 'message' in error ? error.message : String(error);
+    const errorCode = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    const errorStatus = typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined;
+
+    if (retries > 0 && (errorStatus === 429 || errorCode === 429 || errorMessage?.includes('429') || errorMessage?.includes('RESOURCE_EXHAUSTED'))) {
       await new Promise(resolve => setTimeout(resolve, delay));
       return retryRequest(requestFn, retries - 1, delay * 2);
     }
-    throw error;
+    // Re-throw the original error, but ensure it has a consistent structure if possible
+    throw {
+      code: errorCode,
+      status: errorStatus,
+      message: errorMessage,
+      originalError: error
+    };
   }
 }
 
@@ -37,6 +47,9 @@ export const generateStudentFeed = async (
     - 내신, 모의고사(모고), 수행평가 망함, 야자 도망, 급식 메뉴, 매점 빵.
     - 짝사랑, 전남친/전여친, 고백, 썸.
     - 담임쌤 뒷담, 체육대회, 축제, 친구 관계, 저격.
+
+    [절대 규칙]
+    - 대학교 관련 용어(학번, 학과, 동아리 등)는 절대 사용 금지. 오직 고등학생 배경만 생각하세요.
   `;
 
   let situationPrompt = "";
@@ -126,9 +139,9 @@ export const generateStudentFeed = async (
       }));
     }
     return [];
-  } catch (e) {
-    console.error("Feed generation failed", e);
-    return [];
+  } catch (e: any) {
+    console.error("Feed generation failed", e.message || e);
+    throw e; // Re-throw to App.tsx for global error handling
   }
 };
 
@@ -148,14 +161,14 @@ export const analyzePost = async (article: Article, isSpicy: boolean = false): P
   if (article.isShadowBanned) {
     instruction = `
       [⛔️ 중요: 쉐도우 밴(Shadow Ban) 적용됨]
-      이 게시글은 작성자를 제외한 다른 학생들에게 **절대 보이지 않습니다.**
+      이 게시글은 작성자(${article.realName}, 표시명: ${article.displayAuthor})를 제외한 **그 어떤 다른 학생에게도 절대 보이지 않습니다.**
       
       [필수 행동 수칙]
-      1. **다른 학생의 댓글은 0개여야 합니다.** (아무도 못 보니까)
-      2. 오직 작성자 본인(${article.displayAuthor})만이 댓글을 답니다.
-      3. 작성자는 혼란스러워해야 합니다.
-         예: "아니 왜 아무도 안 봄?", "서버 터짐?", "댓글 좀 달아줘..", "???"
-      4. 작성자 혼자 떠드는 댓글 1~3개만 생성하세요.
+      1. **다른 학생의 댓글은 0개여야 합니다. 단 1개도 허용하지 않습니다.**
+      2. 오직 작성자 본인(${article.displayAuthor})만이 댓글을 1~3개 답니다.
+      3. 작성자는 자신의 글에 아무도 댓글을 달지 않는 상황에 대해 혼란스러움, 짜증, 의아함을 표현해야 합니다.
+         예: "아니 왜 아무도 안 봄?", "서버 터짐?", "댓글 좀 달아줘..", "??", "내 글만 렉걸림?", "ㅁㅊ 글삭튀 각인가"
+      4. 생성되는 모든 댓글의 username은 "${article.displayAuthor}" 여야 하며, realIdentity는 "${article.realName}"이어야 합니다.
     `;
   }
 
@@ -173,7 +186,9 @@ export const analyzePost = async (article: Article, isSpicy: boolean = false): P
     [절대 규칙]
     1. 모든 댓글은 위 **게시글의 내용과 100% 일치**해야 합니다. 엉뚱한 소리 금지.
     2. 말투는 07~09년생 고등학생 말투(급식체, 초성) 필수.
-    3. isShadowBanned가 true라면, 작성자 외에는 아무도 댓글을 달지 못합니다.
+    3. isShadowBanned가 true라면, **작성자 외에는 아무도 댓글을 달지 못합니다.** (다른 학생 댓글 0개)
+    4. 대학교 관련 용어(학번, 학과 등)는 절대 사용 금지.
+    5. 생성되는 댓글의 realIdentity는 원글 작성자의 realName과 일치시키세요.
 
     JSON 포맷으로 출력하세요.
   `;
@@ -231,19 +246,35 @@ export const analyzePost = async (article: Article, isSpicy: boolean = false): P
 
     if (response.text) {
         const parsed = JSON.parse(response.text);
-        parsed.comments = parsed.comments.map((c: any, i: number) => ({
+        let comments = parsed.comments.map((c: any, i: number) => ({
             ...c,
             id: `cmt-${Date.now()}-${i}`
         }));
+
+        // Client-side safeguard for shadow-banned posts: ensure only author comments
+        if (article.isShadowBanned) {
+            comments = comments.filter((c: Comment) => 
+                c.realIdentity === article.realName || c.username.includes("운영자") // Admin comments are allowed
+            );
+            // Ensure any filtered comments from the AI are replaced with the expected "confused author" comments
+            if (comments.length === 0) {
+              comments.push({
+                id: `cmt-${Date.now()}-0`,
+                username: article.displayAuthor,
+                realIdentity: article.realName,
+                content: "아니 왜 아무도 안 보냐 진짜... 내 글만 렉 걸림?",
+                likes: 0,
+                replies: []
+              });
+            }
+        }
+        parsed.comments = comments;
         return parsed as SimulationResult;
     }
     throw new Error("No response");
-  } catch (error) {
-    return {
-      comments: [],
-      indices: { teacherSuspicion: 0, atmosphere: 0, bullyingRisk: 0 },
-      adminTip: "AI 연결 실패.",
-    };
+  } catch (error: any) {
+    console.error("Analyze post failed", error.message || error);
+    throw error; // Re-throw to App.tsx for global error handling
   }
 };
 
@@ -268,6 +299,10 @@ export const generateDMSimulation = async (article: Article): Promise<DMSimulati
     - 현실 고등학생 1:1 대화.
     - 욕설, 비속어, "존나", "시발", "개웃겨", "ㅇㅈ", "ㄴㄴ" 등 필터링 없이 리얼하게.
     - 맞춤법 파괴 허용.
+
+    [절대 규칙]
+    - 대학교 관련 용어(학번, 학과 등)는 절대 사용 금지.
+    - DM 내용은 위 [타겟 게시글]의 내용과 반드시 관련 있어야 합니다.
 
     [출력 요구사항]
     1. partnerName: 대화 상대 이름.
@@ -311,21 +346,16 @@ export const generateDMSimulation = async (article: Article): Promise<DMSimulati
       return JSON.parse(response.text) as DMSimulationResult;
     }
     throw new Error("DM Gen Failed");
-  } catch (e) {
-    console.error(e);
-    return {
-      partnerName: "알 수 없음",
-      relationship: "데이터 손상",
-      isTwoFaced: false,
-      logs: []
-    };
+  } catch (e: any) {
+    console.error("DM generation failed", e.message || e);
+    throw e; // Re-throw to App.tsx for global error handling
   }
 };
 
 // Generate a reply from a specific user when the admin (or someone else) replies to them
 export const generateReplyReaction = async (
   article: Article, 
-  originalComment: Comment, 
+  originalComment: Comment, // This is the comment the admin is replying TO
   adminReply: string,
   isAdminIdRevealed: boolean
 ): Promise<Reply[]> => {
@@ -334,35 +364,49 @@ export const generateReplyReaction = async (
   let specificInstruction = "";
   
   if (article.isShadowBanned) {
+    // If originalComment is from the author, then only the author replies.
+    // Otherwise, if admin replied to a general comment from a shadow-banned post (which shouldn't happen with strict filtering, but for safety),
+    // still assume the interaction is between Admin and the Article Author.
+    const reactingUserRealIdentity = originalComment.realIdentity;
+    const reactingUserDisplayName = originalComment.username;
+
     specificInstruction = `
       [⚠️ 특수 상황: 쉐도우 밴 상태]
-      원래 작성자(댓글쓴이)는 아무도 자신의 글/댓글을 못 본다고 생각하고 있었습니다.
-      그런데 갑자기 누군가(관리자/상대방)가 대댓글을 달았습니다.
+      게시글 작성자(${article.realName}, 표시명: ${article.displayAuthor})는 자신의 게시글이 쉐도우 밴 상태라서 아무도 못 본다고 생각하고 있었습니다.
+      그런데 갑자기 관리자(댓글: "${adminReply}")가 자신이 쓴 댓글("${originalComment.content}")에 대댓글을 달았습니다.
       
       반응 패턴:
       1. **깜짝 놀람/당황**: "어? 내 글 보여요?", "뭐야 알림 떴는데?", "누구세요?"
-      2. **의심**: "님 뭐임?", "운영자임?", "왜 님만 보임?"
+      2. **의심/질문**: "님 뭐임?", "운영자임?", "왜 님만 보임?", "설마 쌤..?"
+      3. 관리자가 신원 공개함: ${isAdminIdRevealed ? '네' : '아니오'}
       
-      작성자 정보: ${originalComment.realIdentity} (이 사람이 대답해야 함)
+      [필수: 대댓글은 **${article.realName} 본인만** 작성해야 합니다.]
     `;
   } else {
     specificInstruction = `
       [상황]
-      '${originalComment.username}'(${originalComment.realIdentity})이 쓴 댓글에 누군가 답글을 달았습니다.
+      '${originalComment.username}'(${originalComment.realIdentity})이 쓴 댓글("${originalComment.content}")에 누군가(관리자, 댓글: "${adminReply}") 답글을 달았습니다.
       이에 대한 자연스러운 대댓글(반응)을 1개 작성하세요.
       글 내용과 이전 대화 맥락을 고려하세요.
       고등학생 말투 필수.
+      관리자가 신원 공개함: ${isAdminIdRevealed ? '네' : '아니오'}
     `;
   }
 
   const prompt = `
-    당신은 고등학생 ${originalComment.realIdentity} 입니다.
+    당신은 ${article.isShadowBanned ? `${article.studentGrade}학년 ${article.studentClass}반 ${article.realName}` : originalComment.realIdentity} 입니다.
     
-    [게시글] "${article.title}" - ${article.content}
+    [게시글] 제목: "${article.title}" / 내용: "${article.content}"
     [내가 쓴 댓글] "${originalComment.content}"
     [상대방(관리자)의 답글] "${adminReply}"
     
     ${specificInstruction}
+
+    [절대 규칙]
+    1. 대댓글은 위 **게시글과 이전 대화 맥락에 100% 일치**해야 합니다. 엉뚱한 소리 금지.
+    2. 말투는 07~09년생 고등학생 말투(급식체, 초성) 필수.
+    3. isShadowBanned가 true일 경우, 생성되는 대댓글의 username은 "${article.displayAuthor}" 여야 하며, realIdentity는 "${article.realName}"이어야 합니다.
+    4. 대학교 관련 용어(학번, 학과 등)는 절대 사용 금지.
 
     JSON 포맷으로 1개의 대댓글 객체를 반환하세요.
   `;
@@ -390,53 +434,65 @@ export const generateReplyReaction = async (
     }));
 
     if (response.text) {
-        return JSON.parse(response.text) as Reply[];
+        // Ensure the returned reply adheres to shadow ban rules (username/realIdentity)
+        let replies = JSON.parse(response.text) as Reply[];
+        if (article.isShadowBanned && replies.length > 0) {
+          replies[0].username = article.displayAuthor;
+          replies[0].realIdentity = article.realName;
+        }
+        return replies;
     }
     return [];
-  } catch (e) {
-      console.error(e);
-      return [];
+  } catch (e: any) {
+      console.error("Reply reaction failed", e.message || e);
+      throw e; // Re-throw to App.tsx for global error handling
   }
 };
 
 // Generate reactions when a NEW comment is posted by the Admin
 export const generateReactionToNewComment = async (
   article: Article, 
-  newComment: Comment,
+  newComment: Comment, // This is the new top-level comment posted by admin
   isAdminIdRevealed: boolean
 ): Promise<Reply[]> => {
   const modelId = "gemini-3-flash-preview";
-  
-  // If shadow banned, no one sees the admin's new comment unless it's the author checking their own post
-  // But usually, shadow ban means author is isolated. 
-  // If admin posts a TOP LEVEL comment, the Author might see it.
   
   let instruction = "";
   if (article.isShadowBanned) {
       instruction = `
         [상황: 쉐도우 밴]
-        작성자(${article.realName})는 아무도 댓글을 안 달아서 우울해하고 있었습니다.
-        그런데 갑자기 알림이 울리고 새 댓글이 달렸습니다.
+        게시글 작성자(${article.realName}, 표시명: ${article.displayAuthor})는 아무도 댓글을 안 달아서 우울해하고 있었습니다.
+        그런데 갑자기 관리자(댓글: "${newComment.content}")가 자신의 게시글에 새로운 댓글을 달았습니다.
         
         작성자의 반응을 생성하세요.
         "헐 드디어 사람 옴", "와 깜짝아", "님 제 글 보임??" 같은 반응.
-        작성자 본인만 반응해야 합니다.
+        **오직 작성자 본인(${article.realName})만 반응해야 합니다.**
+        관리자가 신원 공개함: ${isAdminIdRevealed ? '네' : '아니오'}
       `;
   } else {
       instruction = `
         [상황: 일반]
-        게시글에 새로운 댓글(어그로 혹은 팩트폭격)이 달렸습니다.
+        게시글에 새로운 댓글(내용: "${newComment.content}", 작성자: ${newComment.username})이 달렸습니다.
         이에 대한 다른 학생들(랜덤 익명)의 대댓글 반응 1~2개를 생성하세요.
         게시글 내용과 새 댓글 내용에 맞춰 티키타카 하세요.
+        관리자가 신원 공개함: ${isAdminIdRevealed ? '네' : '아니오'}
       `;
   }
 
   const prompt = `
-    [게시글] "${article.title}"
+    당신은 고등학생 커뮤니티 사용자(쉐도우 밴일 경우: ${article.realName}) 입니다.
+    
+    [게시글] 제목: "${article.title}" / 내용: "${article.content}"
     [새로 달린 댓글] "${newComment.content}" (작성자: ${newComment.username})
     
     ${instruction}
     
+    [절대 규칙]
+    1. 대댓글은 위 **게시글과 새 댓글 내용에 100% 일치**해야 합니다. 엉뚱한 소리 금지.
+    2. 말투는 07~09년생 고등학생 말투(급식체, 초성) 필수.
+    3. isShadowBanned가 true일 경우, 생성되는 대댓글의 username은 "${article.displayAuthor}" 여야 하며, realIdentity는 "${article.realName}"이어야 합니다.
+    4. 대학교 관련 용어(학번, 학과 등)는 절대 사용 금지.
+
     JSON 포맷으로 대댓글 배열을 반환하세요.
   `;
 
@@ -463,10 +519,23 @@ export const generateReactionToNewComment = async (
       }));
   
       if (response.text) {
-          return JSON.parse(response.text) as Reply[];
+          let replies = JSON.parse(response.text) as Reply[];
+          // Client-side safeguard for shadow-banned posts: ensure only author replies
+          if (article.isShadowBanned) {
+            replies = replies.filter(r => 
+              r.realIdentity === article.realName || r.username.includes("운영자") // Admin replies are allowed.
+            );
+            if (replies.length > 0) {
+              // Ensure the first reply from author matches identity
+              replies[0].username = article.displayAuthor;
+              replies[0].realIdentity = article.realName;
+            }
+          }
+          return replies;
       }
       return [];
-  } catch (e) {
-    return [];
+  } catch (e: any) {
+    console.error("New comment reaction failed", e.message || e);
+    throw e; // Re-throw to App.tsx for global error handling
   }
 };
