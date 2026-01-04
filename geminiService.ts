@@ -168,7 +168,7 @@ export const analyzePost = async (article: Article, isSpicy: boolean = false): P
       2. 오직 작성자 본인(${article.displayAuthor})만이 댓글을 1~3개 답니다.
       3. 작성자는 자신의 글에 아무도 댓글을 달지 않는 상황에 대해 혼란스러움, 짜증, 의아함을 표현해야 합니다.
          예: "아니 왜 아무도 안 봄?", "서버 터짐?", "댓글 좀 달아줘..", "??", "내 글만 렉걸림?", "ㅁㅊ 글삭튀 각인가"
-      4. 생성되는 모든 댓글의 username은 "${article.displayAuthor}" 여야 하며, realIdentity는 "${article.realName}"이어야 합니다.
+      4. 생성되는 모든 댓글은 작성자 본인(${article.displayAuthor}, ${article.realName})의 댓글이어야 합니다. 다른 학생의 댓글은 절대 생성하지 마세요.
     `;
   }
 
@@ -251,15 +251,15 @@ export const analyzePost = async (article: Article, isSpicy: boolean = false): P
             id: `cmt-${Date.now()}-${i}`
         }));
 
-        // Client-side safeguard for shadow-banned posts: ensure only author comments
+        // Service-side safeguard for shadow-banned posts: ensure only author comments or admin comments
         if (article.isShadowBanned) {
             comments = comments.filter((c: Comment) => 
                 c.realIdentity === article.realName || c.username.includes("운영자") // Admin comments are allowed
             );
-            // Ensure any filtered comments from the AI are replaced with the expected "confused author" comments
-            if (comments.length === 0) {
+            // If after filtering, no comments from the author exist, add a default confused comment
+            if (comments.filter(c => c.realIdentity === article.realName).length === 0) {
               comments.push({
-                id: `cmt-${Date.now()}-0`,
+                id: `cmt-${Date.now()}-auto`,
                 username: article.displayAuthor,
                 realIdentity: article.realName,
                 content: "아니 왜 아무도 안 보냐 진짜... 내 글만 렉 걸림?",
@@ -405,7 +405,7 @@ export const generateReplyReaction = async (
     [절대 규칙]
     1. 대댓글은 위 **게시글과 이전 대화 맥락에 100% 일치**해야 합니다. 엉뚱한 소리 금지.
     2. 말투는 07~09년생 고등학생 말투(급식체, 초성) 필수.
-    3. isShadowBanned가 true일 경우, 생성되는 대댓글의 username은 "${article.displayAuthor}" 여야 하며, realIdentity는 "${article.realName}"이어야 합니다.
+    3. isShadowBanned가 true일 경우, 생성되는 대댓글의 username은 "${article.displayAuthor}" 여야 하며, realIdentity는 "${article.realName}"이어야 합니다. 다른 학생의 대댓글은 절대 생성하지 마세요.
     4. 대학교 관련 용어(학번, 학과 등)는 절대 사용 금지.
 
     JSON 포맷으로 1개의 대댓글 객체를 반환하세요.
@@ -434,11 +434,24 @@ export const generateReplyReaction = async (
     }));
 
     if (response.text) {
-        // Ensure the returned reply adheres to shadow ban rules (username/realIdentity)
         let replies = JSON.parse(response.text) as Reply[];
+        // Enforce shadow ban rules: ensure only author replies and correct identity
         if (article.isShadowBanned && replies.length > 0) {
-          replies[0].username = article.displayAuthor;
-          replies[0].realIdentity = article.realName;
+          replies = replies.filter(r => r.realIdentity === article.realName); // Only keep author's replies
+          if (replies.length > 0) {
+            replies[0].username = article.displayAuthor;
+            replies[0].realIdentity = article.realName;
+            // Limit to one reply from the author
+            replies = [replies[0]];
+          } else {
+            // If AI failed to generate author's reply, provide a default one
+            replies = [{
+              username: article.displayAuthor,
+              realIdentity: article.realName,
+              content: "어? 내 글에 답글 달린 거 보여요? 뭐임?",
+              likes: 0
+            }];
+          }
         }
         return replies;
     }
@@ -490,7 +503,7 @@ export const generateReactionToNewComment = async (
     [절대 규칙]
     1. 대댓글은 위 **게시글과 새 댓글 내용에 100% 일치**해야 합니다. 엉뚱한 소리 금지.
     2. 말투는 07~09년생 고등학생 말투(급식체, 초성) 필수.
-    3. isShadowBanned가 true일 경우, 생성되는 대댓글의 username은 "${article.displayAuthor}" 여야 하며, realIdentity는 "${article.realName}"이어야 합니다.
+    3. isShadowBanned가 true일 경우, 생성되는 대댓글의 username은 "${article.displayAuthor}" 여야 하며, realIdentity는 "${article.realName}"이어야 합니다. 다른 학생의 대댓글은 절대 생성하지 마세요.
     4. 대학교 관련 용어(학번, 학과 등)는 절대 사용 금지.
 
     JSON 포맷으로 대댓글 배열을 반환하세요.
@@ -520,15 +533,22 @@ export const generateReactionToNewComment = async (
   
       if (response.text) {
           let replies = JSON.parse(response.text) as Reply[];
-          // Client-side safeguard for shadow-banned posts: ensure only author replies
+          // Enforce shadow ban rules: ensure only author replies and correct identity
           if (article.isShadowBanned) {
-            replies = replies.filter(r => 
-              r.realIdentity === article.realName || r.username.includes("운영자") // Admin replies are allowed.
-            );
+            replies = replies.filter(r => r.realIdentity === article.realName); // Only keep author's replies
             if (replies.length > 0) {
-              // Ensure the first reply from author matches identity
               replies[0].username = article.displayAuthor;
               replies[0].realIdentity = article.realName;
+              // Limit to one reply from the author
+              replies = [replies[0]];
+            } else {
+              // If AI failed to generate author's reply, provide a default one
+              replies = [{
+                username: article.displayAuthor,
+                realIdentity: article.realName,
+                content: "헐 관리자님 제 글 보이는 거예요? 깜짝아...",
+                likes: 0
+              }];
             }
           }
           return replies;
