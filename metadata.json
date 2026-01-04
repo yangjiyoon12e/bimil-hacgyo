@@ -1,0 +1,5 @@
+{
+  "name": "secret",
+  "description": "운영자 권한으로 익명 게시판의 비밀을 파헤치세요.",
+  "requestFramePermissions": []
+}
