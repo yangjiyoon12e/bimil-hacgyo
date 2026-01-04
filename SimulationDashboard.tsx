@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { SimulationResult, Article, Comment, Reply, DMSimulationResult } from './types';
-import { analyzePost, generateReplyReaction, generateReactionToNewComment, generateDMSimulation } from './services/geminiService';
+import { analyzePost, generateReplyReaction, generateReactionToNewComment, generateDMSimulation } from './geminiService';
 
 interface PostDetailProps {
   article: Article;
@@ -137,12 +137,18 @@ const PostDetail: React.FC<PostDetailProps> = ({ article, isSpicyMode, onBack, o
 
       // Generate reactions from the AI based on admin's reply
       const reactions = await generateReplyReaction(article, comment, currentText, adminMode);
-      if(reactions.length > 0) {
+      
+      // Client-side safety filter for shadow-banned posts
+      const safeReactions = isShadowBanned 
+          ? reactions.filter(r => r.realIdentity === article.realName || r.username.includes("운영자")) 
+          : reactions;
+
+      if(safeReactions.length > 0) {
           setLocalComments(prev => {
               const next = [...prev];
               // Ensure the reaction is added to the correct comment's replies
               if (next[commentIndex]) {
-                  next[commentIndex].replies.push(...reactions);
+                  next[commentIndex].replies.push(...safeReactions);
               }
               return next;
           });
@@ -167,12 +173,18 @@ const PostDetail: React.FC<PostDetailProps> = ({ article, isSpicyMode, onBack, o
 
       // Generate reactions to the new comment
       const replies = await generateReactionToNewComment(article, newComment, adminMode);
-      if (replies.length > 0) {
+      
+      // Client-side safety filter for shadow-banned posts
+      const safeReplies = isShadowBanned
+          ? replies.filter(r => r.realIdentity === article.realName || r.username.includes("운영자"))
+          : replies;
+
+      if (safeReplies.length > 0) {
           setLocalComments(prev => {
               const next = [...prev];
               // Find the newly added comment to append replies
               const target = next.find(c => c.id === newComment.id);
-              if (target) { target.replies.push(...replies); }
+              if (target) { target.replies.push(...safeReplies); }
               return next;
           });
       }
