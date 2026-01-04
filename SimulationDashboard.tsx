@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { SimulationResult, Article, Comment, Reply, DMSimulationResult } from './types';
-import { analyzePost, generateReplyReaction, generateReactionToNewComment, generateDMSimulation } from '.geminiService';
+import { analyzePost, generateReplyReaction, generateReactionToNewComment, generateDMSimulation } from './geminiService';
 
 interface PostDetailProps {
   article: Article;
