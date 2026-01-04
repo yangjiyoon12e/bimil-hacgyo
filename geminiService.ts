@@ -26,6 +26,18 @@ async function retryRequest<T>(requestFn: () => Promise<T>, retries = 3, delay =
   }
 }
 
+// Helper to clean realIdentity strings, removing university-related terms
+function cleanIdentity(identity: string | undefined): string {
+  if (!identity) return '신원미상';
+  // Remove university terms and specific academic year patterns
+  let cleaned = identity.replace(/대학교|대학|대|학번|학과|동아리|전공|\d{2}학번/g, '').trim();
+  // Remove any remaining numbers that might be part of an unwanted pattern
+  cleaned = cleaned.replace(/\s*\d+\s*(학년|반)/g, ''); // Specifically target grade/class if AI put them directly in name
+  cleaned = cleaned.replace(/\d+/g, ''); // Remove any remaining numbers
+  // Ensure it's not empty after cleaning
+  return cleaned.length > 0 ? cleaned : '신원미상';
+}
+
 // Generate a batch of posts (Feed)
 export const generateStudentFeed = async (
   count: number = 4, 
@@ -135,7 +147,8 @@ export const generateStudentFeed = async (
         id: `post-${Date.now()}-${index}`,
         timestamp: new Date().toISOString(),
         viewCount: Math.floor(Math.random() * 500) + 10,
-        isShadowBanned: false
+        isShadowBanned: false,
+        realName: cleanIdentity(item.realName), // Clean realName
       }));
     }
     return [];
@@ -248,7 +261,12 @@ export const analyzePost = async (article: Article, isSpicy: boolean = false): P
         const parsed = JSON.parse(response.text);
         let comments = parsed.comments.map((c: any, i: number) => ({
             ...c,
-            id: `cmt-${Date.now()}-${i}`
+            id: `cmt-${Date.now()}-${i}`,
+            realIdentity: cleanIdentity(c.realIdentity), // Clean comment realIdentity
+            replies: c.replies.map((r: any) => ({
+              ...r,
+              realIdentity: cleanIdentity(r.realIdentity), // Clean reply realIdentity
+            }))
         }));
 
         // Service-side safeguard for shadow-banned posts: ensure only author comments or admin comments
@@ -343,6 +361,7 @@ export const generateDMSimulation = async (article: Article): Promise<DMSimulati
     }));
 
     if (response.text) {
+      // No realIdentity to clean here, as it's chat logs
       return JSON.parse(response.text) as DMSimulationResult;
     }
     throw new Error("DM Gen Failed");
@@ -440,18 +459,24 @@ export const generateReplyReaction = async (
           replies = replies.filter(r => r.realIdentity === article.realName); // Only keep author's replies
           if (replies.length > 0) {
             replies[0].username = article.displayAuthor;
-            replies[0].realIdentity = article.realName;
+            replies[0].realIdentity = cleanIdentity(article.realName); // Clean realIdentity
             // Limit to one reply from the author
             replies = [replies[0]];
           } else {
             // If AI failed to generate author's reply, provide a default one
             replies = [{
               username: article.displayAuthor,
-              realIdentity: article.realName,
+              realIdentity: cleanIdentity(article.realName), // Clean realIdentity
               content: "어? 내 글에 답글 달린 거 보여요? 뭐임?",
               likes: 0
             }];
           }
+        } else {
+          // Even if not shadow-banned, clean the realIdentity for general replies
+          replies = replies.map(r => ({
+            ...r,
+            realIdentity: cleanIdentity(r.realIdentity)
+          }));
         }
         return replies;
     }
@@ -538,18 +563,24 @@ export const generateReactionToNewComment = async (
             replies = replies.filter(r => r.realIdentity === article.realName); // Only keep author's replies
             if (replies.length > 0) {
               replies[0].username = article.displayAuthor;
-              replies[0].realIdentity = article.realName;
+              replies[0].realIdentity = cleanIdentity(article.realName); // Clean realIdentity
               // Limit to one reply from the author
               replies = [replies[0]];
             } else {
               // If AI failed to generate author's reply, provide a default one
               replies = [{
                 username: article.displayAuthor,
-                realIdentity: article.realName,
+                realIdentity: cleanIdentity(article.realName), // Clean realIdentity
                 content: "헐 관리자님 제 글 보이는 거예요? 깜짝아...",
                 likes: 0
               }];
             }
+          } else {
+            // Even if not shadow-banned, clean the realIdentity for general replies
+            replies = replies.map(r => ({
+              ...r,
+              realIdentity: cleanIdentity(r.realIdentity)
+            }));
           }
           return replies;
       }
