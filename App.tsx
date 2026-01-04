@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import CommunityFeed from './components/ArticleEditor'; 
-import PostDetail from './components/SimulationDashboard'; 
+import CommunityFeed from './ArticleEditor'; 
+import PostDetail from './SimulationDashboard'; 
 import { Article, ArticleCategory, EmergencyType } from './types';
-import { generateStudentFeed } from './services/geminiService';
+import { generateStudentFeed } from './geminiService';
 
 const App: React.FC = () => {
   const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
