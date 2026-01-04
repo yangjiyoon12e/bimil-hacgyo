@@ -1,8 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import CommunityFeed from './ArticleEditor'; 
 import PostDetail from './SimulationDashboard'; 
 import { Article, ArticleCategory, EmergencyType } from './types';
 import { generateStudentFeed } from './geminiService';
+
+// The 'window.aistudio' object is assumed to be provided by the AI Studio environment,
+// so its type definition should ideally come from the environment's global types
+// to avoid conflicting declarations. Removing this explicit global declaration.
+// declare global {
+//   interface Window {
+//     aistudio: {
+//       hasSelectedApiKey: () => Promise<boolean>;
+//       openSelectKey: () => Promise<void>;
+//     };
+//   }
+// }
 
 const App: React.FC = () => {
   const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
@@ -15,14 +27,52 @@ const App: React.FC = () => {
   const [isWriteModalOpen, setIsWriteModalOpen] = useState(false);
   const [writeModalInitData, setWriteModalInitData] = useState<{title: string, content: string, category: ArticleCategory} | undefined>(undefined);
 
+  // API Key Management State
+  const [showApiKeyWarning, setShowApiKeyWarning] = useState(false);
+  const [apiKeyErrorMessage, setApiKeyErrorMessage] = useState("");
+
+  // Check API key status on mount
+  useEffect(() => {
+    const checkApiKey = async () => {
+      // Only run if window.aistudio is available (i.e., in AI Studio frame)
+      // Ensure 'window.aistudio' exists before trying to access its methods.
+      if (typeof window !== 'undefined' && window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        if (!hasKey) {
+          setShowApiKeyWarning(true);
+          setApiKeyErrorMessage(
+            "API 키가 선택되지 않았습니다. 유료 GCP 프로젝트의 API 키를 선택해야 모든 기능이 정상 작동합니다."
+          );
+        }
+      }
+    };
+    checkApiKey();
+  }, []); // Run once on mount
+
   // Initial load or manual refresh
   const handleLoadMore = async () => {
     setLoading(true);
     try {
         const newArticles = await generateStudentFeed(4, isSpicyMode, currentEmergency);
         setArticles(prev => [...prev, ...newArticles]);
-    } catch (e) {
-        console.error("Failed to fetch feed");
+        // If successful, hide any previous API key warnings
+        if (showApiKeyWarning && apiKeyErrorMessage.includes("API 키가 선택되지 않았습니다")) {
+          setShowApiKeyWarning(false);
+          setApiKeyErrorMessage("");
+        }
+    } catch (e: any) {
+        // Ensure e.message is used for logging, falling back to string representation
+        console.error("Failed to fetch feed", e.message || String(e));
+        if (e?.status === 429 || e?.code === 429 || e?.message?.includes('429') || e?.message?.includes('RESOURCE_EXHAUSTED')) {
+          setShowApiKeyWarning(true);
+          setApiKeyErrorMessage(
+            "API 할당량을 초과했습니다. 유료 GCP 프로젝트의 API 키를 선택하거나 요금제를 확인해주세요. " +
+            "자세한 내용은 문서를 참조하세요: "
+          );
+        } else {
+          setShowApiKeyWarning(true); // Generic error warning
+          setApiKeyErrorMessage("API 연결에 실패했습니다: " + (e.message || "알 수 없는 오류"));
+        }
     } finally {
         setLoading(false);
     }
@@ -64,6 +114,17 @@ const App: React.FC = () => {
           case EmergencyType.POLICE_ALERT: return 'border-blue-500 bg-blue-950/30';
           default: return 'border-slate-800 bg-transparent';
       }
+  };
+
+  const handleOpenApiKeyDialog = async () => {
+    // Ensure 'window.aistudio' exists before trying to access its methods.
+    if (typeof window !== 'undefined' && window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
+      await window.aistudio.openSelectKey();
+      // Assume selection was successful and dismiss warning.
+      // The next API call will re-verify or succeed.
+      setShowApiKeyWarning(false);
+      setApiKeyErrorMessage("");
+    }
   };
 
   return (
@@ -125,6 +186,34 @@ const App: React.FC = () => {
             )}
         </div>
       </nav>
+
+      {/* API Key Warning Banner */}
+      {showApiKeyWarning && (
+        <div className="fixed top-16 left-0 right-0 z-50 p-3 bg-yellow-950/70 border-b border-yellow-700 text-yellow-100 flex items-center justify-between text-sm font-mono animate-fade-in backdrop-blur-sm">
+          <div className="flex items-center gap-2">
+            🔑
+            <span>{apiKeyErrorMessage}</span>
+            {apiKeyErrorMessage.includes("할당량을 초과") && (
+              <a 
+                href="https://ai.google.dev/gemini-api/docs/billing" 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="underline hover:text-white"
+              >
+                (자세히 보기)
+              </a>
+            )}
+          </div>
+          {typeof window !== 'undefined' && window.aistudio && typeof window.aistudio.openSelectKey === 'function' && (
+            <button 
+              onClick={handleOpenApiKeyDialog}
+              className="ml-4 px-4 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md"
+            >
+              API Key 선택
+            </button>
+          )}
+        </div>
+      )}
 
       <main className="max-w-7xl mx-auto px-4 py-8">
         {!selectedArticle ? (
