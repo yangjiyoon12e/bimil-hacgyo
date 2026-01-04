@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
-import { Article, SimulationResult, Comment, Reply, ArticleCategory, EmergencyType, DMChat, DMSimulationResult } from "../types";
+import { Article, SimulationResult, Comment, Reply, ArticleCategory, EmergencyType, DMChat, DMSimulationResult } from "./types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
