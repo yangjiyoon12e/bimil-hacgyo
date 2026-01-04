@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Article, ArticleCategory, EmergencyType } from '../types';
+import { Article, ArticleCategory, EmergencyType } from './types';
 
 interface CommunityFeedProps {
   articles: Article[];
